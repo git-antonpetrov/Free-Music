@@ -1,0 +1,1 @@
+<li><a class="text-[15px]/[30px] font-medium hover:text-primary active:text-primary" href="/top_charts">Топ Чарты</a></li>
