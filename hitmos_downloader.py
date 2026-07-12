@@ -87,6 +87,7 @@ class HitmosDownloader(ctk.CTk):
         fails = []
         try:
             import sys
+            # pyrefly: ignore [missing-import]
             import playwright.__main__
             
             # Сохраняем оригинальные аргументы
@@ -104,7 +105,7 @@ class HitmosDownloader(ctk.CTk):
                 lines = [line.strip() for line in f.readlines() if line.strip()]
             lines.reverse() # Начинаем с последних
             
-            semaphore = asyncio.Semaphore(1)
+            semaphore = asyncio.Semaphore(3)
             
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
@@ -120,24 +121,6 @@ class HitmosDownloader(ctk.CTk):
                             artist_meta = parts[1] if len(parts) > 1 else ""
                             album_meta = parts[2] if len(parts) > 2 else ""
                             cover_meta = parts[3] if len(parts) > 3 else ""
-                            if 'i.scdn.co/image/' in cover_meta:
-                                cover_meta = re.sub(r'([0-9a-f]{8})[0-9a-f]{8}([0-9a-f]{24})', r'\g<1>0000b273\g<2>', cover_meta)
-                            duration_meta = parts[4] if len(parts) > 4 else ""
-                            
-                            target_sec = 0
-                            if duration_meta and ':' in duration_meta:
-                                try:
-                                    m, s = map(int, duration_meta.split(':'))
-                                    target_sec = m * 60 + s
-                                except: pass
-                            
-                            safe_name = "".join([c for c in f"{title_meta} - {artist_meta}" if c.isalpha() or c.isdigit() or c in [' ', '-']]).strip()
-                            if not safe_name: safe_name = "track"
-                            filepath = os.path.join(self.download_dir.get(), f"{safe_name}.mp3")
-                            
-                            if os.path.exists(filepath):
-                                self.log(f"Пропуск (уже скачан): {title_meta} - {artist_meta}")
-                                return
                             
                             # Для поиска на сайте используем только название и автора
                             search_line = f"{title_meta} {artist_meta}".strip()
@@ -181,41 +164,9 @@ class HitmosDownloader(ctk.CTk):
                                         break
                                 
                                 if song_link:
-                                    # Проверяем длительность трека (+- 5 секунд от Spotify)
-                                    time_el = None
-                                    for s in t.find_all('span'):
-                                        txt = s.text.strip()
-                                        if re.match(r'^\d{1,2}:\d{2}$', txt):
-                                            time_el = txt
-                                            break
-                                            
-                                    valid_duration = True
-                                    
-                                    if time_el:
-                                        time_text = time_el
-                                        if ':' in time_text:
-                                            try:
-                                                parts = time_text.split(':')
-                                                hitmos_sec = int(parts[0]) * 60 + int(parts[1])
-                                                
-                                                if target_sec > 0:
-                                                    # Если длительность известна, требуем +- 5 секунд
-                                                    if abs(hitmos_sec - target_sec) > 5:
-                                                        valid_duration = False
-                                                else:
-                                                    # Если из Spotify длительность не пришла, просто отсеиваем рингтоны
-                                                    if hitmos_sec < 70:
-                                                        valid_duration = False
-                                            except:
-                                                pass
-                                                
-                                    if not valid_duration:
-                                        continue # Длительность не совпала
-                                
                                     ta_lower = title_artist.lower()
-                                    # Вычисляем процент сходства (от 0 до 1), сравниваем только название и артиста (без URL обложки!)
-                                    search_target = f"{title_meta} {artist_meta}".lower()
-                                    score = difflib.SequenceMatcher(None, search_target, ta_lower).ratio()
+                                    # Вычисляем процент сходства (от 0 до 1)
+                                    score = difflib.SequenceMatcher(None, search_line.lower(), ta_lower).ratio()
                                             
                                     if score > best_score:
                                         best_score = score
@@ -237,13 +188,10 @@ class HitmosDownloader(ctk.CTk):
                                 else:
                                     for script in s_soup.find_all('script'):
                                         if script.string and '.mp3' in script.string:
-                                            urls = re.findall(r'(https?://[^\s\"\']+\.mp3)', script.string)
-                                            for u in urls:
-                                                if 'hitmos' in u:
-                                                    audio_url = u
-                                                    break
-                                        if audio_url:
-                                            break
+                                            match = re.search(r'(https?://[^\s\"\']+\.mp3)', script.string)
+                                            if match:
+                                                audio_url = match.group(1)
+                                                break
                                                 
                                     if not audio_url:
                                         dl_links = s_soup.find_all('a', href=True)
@@ -268,19 +216,19 @@ class HitmosDownloader(ctk.CTk):
                                     async with aiohttp.ClientSession(timeout=timeout, cookies=cookie_dict) as session:
                                         async with session.get(audio_url, headers=headers) as resp:
                                             if resp.status == 200:
-                                                # Имя файла уже сформировано в начале функции (filepath)
+                                                # Имя файла из названия и автора
+                                                safe_name = "".join([c for c in f"{title_meta} - {artist_meta}" if c.isalpha() or c.isdigit() or c in [' ', '-']]).strip()
+                                                if not safe_name: safe_name = "track"
+                                                filepath = os.path.join(self.download_dir.get(), f"{safe_name}.mp3")
                                                 async with aiofiles.open(filepath, 'wb') as out_f:
                                                     async for chunk in resp.content.iter_chunked(1024 * 64): # 64KB chunks
                                                         await out_f.write(chunk)
                                                         
-                                                # Проверка на обрыв скачивания (меньше 500 КБ)
-                                                if os.path.getsize(filepath) < 500 * 1024:
-                                                    os.remove(filepath)
-                                                    raise Exception("Файл слишком маленький (обрыв скачивания сервером)")
-                                                        
                                                 # Прописываем метаданные ID3
                                                 try:
+                                                    # pyrefly: ignore [missing-import]
                                                     import mutagen.id3
+                                                    # pyrefly: ignore [missing-import]
                                                     from mutagen.id3 import ID3, TIT2, TPE1, TALB, APIC, ID3NoHeaderError
                                                     
                                                     # Удаляем весь мусор от Hitmos (рекламные комменты, левые обложки)
@@ -361,12 +309,12 @@ class HitmosDownloader(ctk.CTk):
                 if prefails:
                     self.log(f"Сработал План Б для {len(prefails)} треков (сохранены в prefails.txt).")
                 self.log(f"Ошибки сохранены в fails.txt")
-                self.after(0, lambda f_count=len(fails): messagebox.showwarning("Завершено с ошибками", f"Не удалось скачать {f_count} треков.\nСписок в fails.txt"))
+                messagebox.showwarning("Завершено с ошибками", f"Не удалось скачать {len(fails)} треков.\nСписок в fails.txt")
             else:
                 self.log(f"\nУспешно скачаны все {len(lines)} треков!")
                 if prefails:
                     self.log(f"Сработал План Б для {len(prefails)} треков (сохранены в prefails.txt).")
-                self.after(0, lambda: messagebox.showinfo("Успех", "Все треки успешно скачаны!"))
+                messagebox.showinfo("Успех", "Все треки успешно скачаны!")
 
         except Exception as e:
             self.log(f"Критическая ошибка: {e}")
