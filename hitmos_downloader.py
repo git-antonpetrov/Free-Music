@@ -85,6 +85,7 @@ class HitmosDownloader(ctk.CTk):
     async def process_downloads(self):
         self.log("Запуск браузера для парсинга (может занять время при первом запуске)...")
         fails = []
+        prefails = []
         try:
             import sys
             # pyrefly: ignore [missing-import]
@@ -105,7 +106,28 @@ class HitmosDownloader(ctk.CTk):
                 lines = [line.strip() for line in f.readlines() if line.strip()]
             lines.reverse() # Начинаем с последних
             
-            semaphore = asyncio.Semaphore(3)
+            # Предварительная фильтрация скачанных треков
+            total_tracks = len(lines)
+            lines_to_download = []
+            for line in lines:
+                parts = [p.strip() for p in line.split(' - ')]
+                title_meta = parts[0] if len(parts) > 0 else line
+                artist_meta = parts[1] if len(parts) > 1 else ""
+                safe_name = "".join([c for c in f"{title_meta} - {artist_meta}" if c.isalpha() or c.isdigit() or c in [' ', '-']]).strip()
+                if not safe_name: safe_name = "track"
+                filepath = os.path.join(self.download_dir.get(), f"{safe_name}.mp3")
+                if os.path.exists(filepath):
+                    self.log(f"Пропуск (уже скачан): {title_meta} - {artist_meta}")
+                else:
+                    lines_to_download.append(line)
+            
+            lines = lines_to_download
+            if not lines:
+                self.log(f"\nВсе {total_tracks} треков уже скачаны!")
+                self.after(0, lambda: messagebox.showinfo("Успех", "Все треки уже скачаны!"))
+                return
+                
+            semaphore = asyncio.Semaphore(1)
             
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
@@ -121,6 +143,25 @@ class HitmosDownloader(ctk.CTk):
                             artist_meta = parts[1] if len(parts) > 1 else ""
                             album_meta = parts[2] if len(parts) > 2 else ""
                             cover_meta = parts[3] if len(parts) > 3 else ""
+                            duration_meta = parts[4] if len(parts) > 4 else ""
+                            
+                            if 'i.scdn.co/image/' in cover_meta:
+                                cover_meta = re.sub(r'([0-9a-f]{8})[0-9a-f]{8}([0-9a-f]{24})', r'\g<1>0000b273\g<2>', cover_meta)
+                                
+                            target_sec = 0
+                            if duration_meta and ':' in duration_meta:
+                                try:
+                                    m, s = map(int, duration_meta.split(':'))
+                                    target_sec = m * 60 + s
+                                except: pass
+                                
+                            safe_name = "".join([c for c in f"{title_meta} - {artist_meta}" if c.isalpha() or c.isdigit() or c in [' ', '-']]).strip()
+                            if not safe_name: safe_name = "track"
+                            filepath = os.path.join(self.download_dir.get(), f"{safe_name}.mp3")
+                            
+                            if os.path.exists(filepath):
+                                self.log(f"Пропуск (уже скачан): {title_meta} - {artist_meta}")
+                                return
                             
                             # Для поиска на сайте используем только название и автора
                             search_line = f"{title_meta} {artist_meta}".strip()
@@ -167,6 +208,20 @@ class HitmosDownloader(ctk.CTk):
                                     ta_lower = title_artist.lower()
                                     # Вычисляем процент сходства (от 0 до 1)
                                     score = difflib.SequenceMatcher(None, search_line.lower(), ta_lower).ratio()
+                                    
+                                    time_div = t.find('div', class_='track__info-r')
+                                    track_sec = 0
+                                    if time_div:
+                                        t_text = time_div.text.strip()
+                                        if ':' in t_text:
+                                            try:
+                                                m, s = map(int, t_text.split(':'))
+                                                track_sec = m * 60 + s
+                                            except: pass
+                                            
+                                    if target_sec > 0 and track_sec > 0:
+                                        if abs(target_sec - track_sec) > 10:
+                                            score -= 0.4
                                             
                                     if score > best_score:
                                         best_score = score
@@ -216,10 +271,7 @@ class HitmosDownloader(ctk.CTk):
                                     async with aiohttp.ClientSession(timeout=timeout, cookies=cookie_dict) as session:
                                         async with session.get(audio_url, headers=headers) as resp:
                                             if resp.status == 200:
-                                                # Имя файла из названия и автора
-                                                safe_name = "".join([c for c in f"{title_meta} - {artist_meta}" if c.isalpha() or c.isdigit() or c in [' ', '-']]).strip()
-                                                if not safe_name: safe_name = "track"
-                                                filepath = os.path.join(self.download_dir.get(), f"{safe_name}.mp3")
+                                                # Имя файла уже сформировано в начале функции (filepath)
                                                 async with aiofiles.open(filepath, 'wb') as out_f:
                                                     async for chunk in resp.content.iter_chunked(1024 * 64): # 64KB chunks
                                                         await out_f.write(chunk)
@@ -305,13 +357,13 @@ class HitmosDownloader(ctk.CTk):
                 f_path = os.path.join(self.download_dir.get(), "fails.txt")
                 with open(f_path, "w", encoding="utf-8") as f:
                     f.write("\n".join(fails))
-                self.log(f"\nГотово! Скачано: {len(lines) - len(fails)}/{len(lines)}.")
+                self.log(f"\nГотово! Успешно скачано: {len(lines) - len(fails)} из {len(lines)} недостающих треков (всего в файле {total_tracks}).")
                 if prefails:
                     self.log(f"Сработал План Б для {len(prefails)} треков (сохранены в prefails.txt).")
                 self.log(f"Ошибки сохранены в fails.txt")
                 messagebox.showwarning("Завершено с ошибками", f"Не удалось скачать {len(fails)} треков.\nСписок в fails.txt")
             else:
-                self.log(f"\nУспешно скачаны все {len(lines)} треков!")
+                self.log(f"\nУспешно скачаны все {len(lines)} новых треков (всего в файле {total_tracks})!")
                 if prefails:
                     self.log(f"Сработал План Б для {len(prefails)} треков (сохранены в prefails.txt).")
                 messagebox.showinfo("Успех", "Все треки успешно скачаны!")
