@@ -218,6 +218,12 @@ class HitmosDownloader(ctk.CTk):
                                         if abs(target_sec - track_sec) > 10:
                                             score -= 0.4
                                             
+                                    bad_words = ['radio', 'edit', 'remix', 'mix', 'live', 'cover', 'slowed', 'sped up', 'reverb', 'instrumental', 'karaoke', 'version', 'кавер', 'ремикс', 'микс']
+                                    for bw in bad_words:
+                                        if bw in ta_lower and bw not in search_line.lower():
+                                            score -= 0.3
+                                            break
+                                            
                                     if score > best_score:
                                         best_score = score
                                         found_song_url = song_link
