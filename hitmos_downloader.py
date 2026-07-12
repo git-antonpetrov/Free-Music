@@ -209,15 +209,10 @@ class HitmosDownloader(ctk.CTk):
                                     # Вычисляем процент сходства (от 0 до 1)
                                     score = difflib.SequenceMatcher(None, search_line.lower(), ta_lower).ratio()
                                     
-                                    time_div = t.find('div', class_='track__info-r')
                                     track_sec = 0
-                                    if time_div:
-                                        t_text = time_div.text.strip()
-                                        if ':' in t_text:
-                                            try:
-                                                m, s = map(int, t_text.split(':'))
-                                                track_sec = m * 60 + s
-                                            except: pass
+                                    m = re.search(r'\b(\d{1,2}):(\d{2})\b', title_artist)
+                                    if m:
+                                        track_sec = int(m.group(1)) * 60 + int(m.group(2))
                                             
                                     if target_sec > 0 and track_sec > 0:
                                         if abs(target_sec - track_sec) > 10:
